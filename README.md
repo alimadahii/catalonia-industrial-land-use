@@ -31,7 +31,7 @@ This project was built using:
 
 The interactive map is available here:
 
-https://alimadahi.github.io/catalonia-industrial-land-use/
+[https://alimadahi.github.io/catalonia-industrial-land-use/](https://alimadahii.github.io/catalonia-industrial-land-use/)
 
 ## Author
 
