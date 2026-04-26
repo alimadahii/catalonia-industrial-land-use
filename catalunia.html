@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Catalonia Industrial Land Use - Draggable Radar</title>
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      height: 100vh;
+      overflow: hidden;
+      background-color: #1a1a1a;
+      color: white;
+    }
+
+    #map-container {
+      width: 100%;
+      height: 100%;
+      position: relative;
+    }
+
+    #map {
+      width: 100%;
+      height: 100%;
+      background-color: #1a1a1a;
+    }
+
+    #loading {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(0,0,0,0.88);
+      padding: 16px 30px;
+      border-radius: 8px;
+      z-index: 2000;
+      font-size: 15px;
+      border: 1px solid #444;
+      color: #fff;
+      line-height: 1.6;
+      max-width: 560px;
+      text-align: center;
+    }
+
+    .leaflet-interactive {
+      cursor: pointer;
+    }
+
+    .custom-chart-icon {
+      background: transparent;
+      border: none;
+      cursor: grab;
+    }
+
+    .custom-chart-icon:active {
+      cursor: grabbing;
+    }
+
+    .lens-wrapper {
+      width: 320px;
+      height: 320px;
+      border-radius: 50%;
+      background: transparent;
+      border: 2px solid rgba(255,255,255,0.85);
+      box-sizing: border-box;
+      padding: 8px;
+      position: relative;
+    }
+
+    .lens-label {
+      position: absolute;
+      top: -32px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0,0,0,0.85);
+      color: #fff;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 5px 10px;
+      border-radius: 6px;
+      white-space: nowrap;
+      border: 1px solid rgba(255,255,255,0.45);
+      z-index: 20;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+    }
+
+    .map-title {
+      position: absolute;
+      top: 18px;
+      left: 18px;
+      z-index: 1200;
+      background: rgba(0,0,0,0.72);
+      border: 1px solid rgba(255,255,255,0.25);
+      border-radius: 8px;
+      padding: 12px 16px;
+      color: white;
+      max-width: 430px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.35);
+    }
+
+    .map-title h2 {
+      margin: 0;
+      font-size: 18px;
+    }
+
+    .map-title p {
+      margin: 6px 0 0 0;
+      font-size: 12px;
+      color: #ccc;
+      line-height: 1.4;
+    }
+  </style>
+</head>
+
+<body>
+
+  <div id="map-container">
+    <div id="map"></div>
+
+    <div class="map-title">
+      <h2>Catalonia Industrial Land Use</h2>
+      <p>
+        Drag the radar chart over each municipality. The selected municipality turns red.
+        Values show industrial and commercial land use, LU_121, in km².
+      </p>
+    </div>
+
+    <div id="loading">Loading Catalonia data...</div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+
+  <script>
+    Chart.register(ChartDataLabels);
+
+    // =====================================================
+    // MAP
+    // =====================================================
+
+    const map = L.map('map', {
+      minZoom: 7,
+      maxZoom: 13
+    }).setView([41.82, 1.55], 8);
+
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      maxZoom: 13,
+      attribution: '&copy; OpenStreetMap &copy; CARTO'
+    }).addTo(map);
+
+    // =====================================================
+    // FIELDS
+    // =====================================================
+
+    const years = ['1990', '2000', '2006', '2012', '2018'];
+
+    const luFields = [
+      'LU_121_199',
+      'LU_121_200',
+      'LU_121_201',
+      'LU_121_202',
+      'LU_121_203'
+    ];
+
+    let lensRadarChart;
+    let geojsonLayer;
+    let cataloniaFeatures = [];
+    let lensMarker = null;
+    let activeLayer = null;
+
+    // =====================================================
+    // HELPERS
+    // =====================================================
+
+    function toNumber(value) {
+      if (value === null || value === undefined || value === '') {
+        return 0;
+      }
+
+      const num = Number(value);
+
+      if (isNaN(num)) {
+        return 0;
+      }
+
+      return num;
+    }
+
+    function formatNumber(value) {
+      return Number(value).toLocaleString('en-US', {
+        minimumFractionDigits: 1,
+        maximumFractionDigits: 1
+      });
+    }
+
+    function getValues(props) {
+      return luFields.map(field => toNumber(props[field]));
+    }
+
+    // =====================================================
+    // RADAR CHART
+    // =====================================================
+
+    function createLensRadarChart() {
+      const ctx = document.getElementById('lensRadarChart').getContext('2d');
+
+      lensRadarChart = new Chart(ctx, {
+        type: 'radar',
+        data: {
+          labels: years,
+          datasets: [{
+            label: 'LU_121 km²',
+            data: [0, 0, 0, 0, 0],
+            borderColor: '#ffffff',
+            backgroundColor: 'rgba(59, 130, 246, 0.18)',
+            borderWidth: 2.8,
+            pointRadius: 4,
+            pointHoverRadius: 6,
+            pointBackgroundColor: '#ffffff',
+            pointBorderColor: '#ffffff',
+            pointBorderWidth: 1.5
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: {
+            duration: 90
+          },
+          layout: {
+            padding: {
+              top: 18,
+              right: 18,
+              bottom: 18,
+              left: 18
+            }
+          },
+          scales: {
+            r: {
+              beginAtZero: true,
+
+              angleLines: {
+                color: 'rgba(255,255,255,0.75)',
+                lineWidth: 1.3
+              },
+
+              grid: {
+                color: 'rgba(255,255,255,0.62)',
+                lineWidth: 1.2
+              },
+
+              pointLabels: {
+                color: '#ffffff',
+                font: {
+                  size: 12,
+                  weight: 'bold'
+                }
+              },
+
+              ticks: {
+                display: true,
+                color: 'rgba(255,255,255,0.82)',
+                backdropColor: 'rgba(0,0,0,0.22)',
+                showLabelBackdrop: true,
+                font: {
+                  size: 10,
+                  weight: 'normal'
+                },
+                maxTicksLimit: 4
+              }
+            }
+          },
+          plugins: {
+            legend: {
+              display: false
+            },
+
+            tooltip: {
+              enabled: true,
+              callbacks: {
+                label: function(context) {
+                  return formatNumber(context.raw) + ' km²';
+                }
+              }
+            },
+
+            datalabels: {
+              display: true,
+
+              color: 'rgba(255,255,255,0.58)',
+              backgroundColor: 'rgba(0,0,0,0.18)',
+              borderColor: 'rgba(255,255,255,0.10)',
+              borderWidth: 0.5,
+              borderRadius: 3,
+
+              padding: {
+                top: 2,
+                right: 4,
+                bottom: 2,
+                left: 4
+              },
+
+              font: {
+                size: 9,
+                weight: 'normal'
+              },
+
+              formatter: function(value) {
+                return formatNumber(value) + ' km²';
+              },
+
+              anchor: 'end',
+              align: 'top',
+              offset: 5,
+              clip: false
+            }
+          }
+        }
+      });
+    }
+
+    function updateChart(values) {
+      if (lensRadarChart) {
+        lensRadarChart.data.datasets[0].data = values;
+        lensRadarChart.update();
+      }
+    }
+
+    function updateLensInfo(props) {
+      const municipalityName = props.NAME_6 || 'Unknown Municipality';
+
+      const lensLabel = document.getElementById('lensLabel');
+      if (lensLabel) {
+        lensLabel.innerText = municipalityName;
+      }
+
+      const values = getValues(props);
+      updateChart(values);
+    }
+
+    function showOutsideState() {
+      const lensLabel = document.getElementById('lensLabel');
+
+      if (lensLabel) {
+        lensLabel.innerText = 'Outside municipality';
+      }
+
+      updateChart([0, 0, 0, 0, 0]);
+      clearActiveLayer();
+    }
+
+    // =====================================================
+    // MAP STYLES
+    // =====================================================
+
+    function getFeatureStyle(feature) {
+      const value2018 = toNumber(feature.properties.LU_121_203);
+
+      let fillOpacity = 0.10;
+
+      if (value2018 > 0) fillOpacity = 0.18;
+      if (value2018 > 1) fillOpacity = 0.28;
+      if (value2018 > 5) fillOpacity = 0.40;
+      if (value2018 > 10) fillOpacity = 0.55;
+
+      return {
+        color: '#555',
+        weight: 0.8,
+        opacity: 1,
+        fillColor: '#3b82f6',
+        fillOpacity: fillOpacity
+      };
+    }
+
+    function getHighlightStyle() {
+      return {
+        color: '#ff4d4f',
+        weight: 2.8,
+        opacity: 1,
+        fillColor: '#ff4d4f',
+        fillOpacity: 0.58
+      };
+    }
+
+    function clearActiveLayer() {
+      if (activeLayer && geojsonLayer) {
+        geojsonLayer.resetStyle(activeLayer);
+        activeLayer = null;
+      }
+    }
+
+    function highlightLayerByFeature(targetFeature) {
+      clearActiveLayer();
+
+      geojsonLayer.eachLayer(function(layer) {
+        if (layer.feature === targetFeature) {
+          activeLayer = layer;
+          layer.setStyle(getHighlightStyle());
+          layer.bringToFront();
+        }
+      });
+    }
+
+    // =====================================================
+    // SPATIAL CHECK
+    // =====================================================
+
+    function findFeatureAtLatLng(lat, lng) {
+      const point = turf.point([lng, lat]);
+
+      for (let i = 0; i < cataloniaFeatures.length; i++) {
+        const feature = cataloniaFeatures[i];
+
+        try {
+          if (turf.booleanPointInPolygon(point, feature)) {
+            return feature;
+          }
+        } catch (err) {
+          console.warn('Geometry error:', err);
+        }
+      }
+
+      return null;
+    }
+
+    function updateByLensPosition() {
+      if (!lensMarker || cataloniaFeatures.length === 0) {
+        return;
+      }
+
+      const pos = lensMarker.getLatLng();
+      const feature = findFeatureAtLatLng(pos.lat, pos.lng);
+
+      if (feature) {
+        updateLensInfo(feature.properties);
+        highlightLayerByFeature(feature);
+      } else {
+        showOutsideState();
+      }
+    }
+
+    let throttleTimer = null;
+
+    function throttledUpdateByLensPosition() {
+      if (throttleTimer) {
+        return;
+      }
+
+      throttleTimer = setTimeout(() => {
+        updateByLensPosition();
+        throttleTimer = null;
+      }, 80);
+    }
+
+    // =====================================================
+    // INIT DRAGGABLE LENS
+    // =====================================================
+
+    function initLensMarker() {
+      const chartIcon = L.divIcon({
+        className: 'custom-chart-icon',
+        html: `
+          <div style="position: relative; width: 320px; height: 320px;">
+            <div class="lens-label" id="lensLabel">Drag me</div>
+            <div class="lens-wrapper">
+              <canvas id="lensRadarChart"></canvas>
+            </div>
+          </div>
+        `,
+        iconSize: [320, 320],
+        iconAnchor: [160, 160]
+      });
+
+      lensMarker = L.marker([41.39, 2.17], {
+        icon: chartIcon,
+        draggable: true,
+        zIndexOffset: 1000
+      }).addTo(map);
+
+      setTimeout(() => {
+        createLensRadarChart();
+        updateByLensPosition();
+      }, 200);
+
+      lensMarker.on('drag', function() {
+        throttledUpdateByLensPosition();
+      });
+
+      lensMarker.on('dragend', function() {
+        updateByLensPosition();
+      });
+    }
+
+    // =====================================================
+    // FEATURE EVENTS
+    // =====================================================
+
+    function onEachFeature(feature, layer) {
+      const props = feature.properties;
+      const name = props.NAME_6 || 'Unknown Municipality';
+      const province = props.NAME_3 || '';
+      const value2018 = toNumber(props.LU_121_203);
+
+      layer.bindTooltip(
+        `<b>${name}</b><br>${province}<br>LU_121 2018: ${formatNumber(value2018)} km²`,
+        {
+          sticky: true,
+          direction: 'top',
+          opacity: 0.9
+        }
+      );
+
+      layer.on({
+        click: function(e) {
+          if (lensMarker) {
+            lensMarker.setLatLng(e.latlng);
+            updateByLensPosition();
+          }
+        }
+      });
+    }
+
+    // =====================================================
+    // LOAD GEOJSON
+    // =====================================================
+
+    async function loadGeoJSON() {
+      const possibleFiles = [
+        'data.geojson',
+        'data.geojson.json'
+      ];
+
+      let lastError = null;
+
+      for (const fileName of possibleFiles) {
+        try {
+          const response = await fetch(fileName);
+
+          if (!response.ok) {
+            throw new Error(fileName + ' not found');
+          }
+
+          const data = await response.json();
+
+          cataloniaFeatures = data.features || [];
+
+          if (cataloniaFeatures.length === 0) {
+            throw new Error('No features found in GeoJSON.');
+          }
+
+          document.getElementById('loading').style.display = 'none';
+
+          geojsonLayer = L.geoJSON(data, {
+            style: getFeatureStyle,
+            onEachFeature: onEachFeature
+          }).addTo(map);
+
+          map.fitBounds(geojsonLayer.getBounds(), {
+            padding: [20, 20]
+          });
+
+          initLensMarker();
+
+          console.log('Loaded file:', fileName);
+          console.log('Features:', cataloniaFeatures.length);
+
+          return;
+
+        } catch (error) {
+          lastError = error;
+          console.warn(error.message);
+        }
+      }
+
+      const loader = document.getElementById('loading');
+
+      loader.innerHTML = `
+        Error loading Catalonia data.<br><br>
+        Check these points:<br>
+        1) data.geojson is in the same folder as index.html<br>
+        2) GeoJSON is exported in WGS84<br>
+        3) The file contains valid GeoJSON features
+      `;
+
+      loader.style.color = '#ef4444';
+      loader.style.borderColor = '#ef4444';
+
+      console.error(lastError);
+    }
+
+    // =====================================================
+    // START
+    // =====================================================
+
+    loadGeoJSON();
+  </script>
+
+</body>
+</html>
